@@ -215,7 +215,8 @@ for idx, row in paged_df.iterrows():
     with col:
         st.markdown(f"""
         <div style="
-            background-color: #f9f9f9;
+            background-color: #eeeeee;
+            color: #000;
             border-radius: 18px;
             padding: 20px;
             margin-bottom: 24px;
