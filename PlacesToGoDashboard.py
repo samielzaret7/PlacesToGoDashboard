@@ -2,9 +2,23 @@ import streamlit as st
 import pandas as pd
 from notion_client import Client
 import base64
+from streamlit_scroll_to_top import scroll_to_here
+
+st.set_page_config(layout="wide")
+
+if 'scroll_to_top' not in st.session_state:
+    st.session_state.scroll_to_top = False
+
+if st.session_state.scroll_to_top:
+    scroll_to_here(0, key='top')
+    st.session_state.scroll_to_top = False
+
+def scroll_to_top():
+    st.session_state.scroll_to_top = True
 
 
 
+@st.cache_data
 def load_icon_as_base64(path):
     with open(path, "rb") as f:
         data = f.read()
@@ -41,7 +55,8 @@ def get_value(prop, prop_type):
         return None
 
 # Fetch pages from Notion
-def fetch_places():
+@st.cache_data(ttl=3600)
+def fetch_and_parse():
     results = []
     next_cursor = None
     while True:
@@ -56,19 +71,15 @@ def fetch_places():
         if not response.get('has_more'):
             break
         next_cursor = response.get('next_cursor')
-    return results
 
-# Parse Notion data
-def parse_notion_data(pages):
     data = []
-    for page in pages:
+    for page in results:
         props = page['properties']
         row = {
             "Place": get_value(props["Place"], "title"),
             "City": get_value(props["City"], "rich_text"),
             "Category": get_value(props["Category"], "select"),
             "Sub-Category": get_value(props["Sub-Category"], "multi_select"),
-            "Sub-Category Str": ", ".join(get_value(props["Sub-Category"], "multi_select")),
             "Visited": get_value(props["Visited"], "checkbox"),
             "Visit Date": get_value(props["Visit Date"], "date"),
             "Notes": get_value(props["Notes"], "rich_text"),
@@ -78,7 +89,6 @@ def parse_notion_data(pages):
             "Rating": get_value(props["Rating"], "number"),
             "Price Range": get_value(props["Price Range"], "select"),
             "Cuisine / Type": get_value(props["Cuisine / Type"], "multi_select"),
-            "Cuisine / Type (Str)": ", ".join(get_value(props["Cuisine / Type"], "multi_select")),
             "Address": get_value(props["Address"], "url"),
             "PicURL": get_value(props["PicURL"], "url"),
             "Social": get_value(props["Social"], "url"),
@@ -89,9 +99,13 @@ def parse_notion_data(pages):
 
 st.title("📍 Places to Visit Dashboard")
 
+if st.sidebar.button("🔄 Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
 with st.spinner("Fetching data from Notion..."):
-    notion_pages = fetch_places()
-    df = parse_notion_data(notion_pages)
+    df = fetch_and_parse()
+
 
 # Filters
 with st.sidebar:
@@ -167,18 +181,38 @@ elif sort_option == "Not Visited First":
     filtered_df = filtered_df.sort_values(by="Visited", ascending=True)
 
 
+
+
 left_col, divider_col, right_col = st.columns([1, 0.02, 1])
 columns = [left_col, right_col]
-
 
 with divider_col:
     st.markdown("<div style='height: 100%; border-left: 1px solid #ddd;'></div>", unsafe_allow_html=True)
 
-for idx, row in filtered_df.iterrows():
-    col = columns[idx % 2]
+# Pagination control
+st.markdown("---")
+if "selected_page" not in st.session_state:
+    st.session_state.selected_page = 1
 
+pagination_col1, pagination_col2 = st.columns([1, 1])
+with pagination_col1:
+    items_per_page = st.selectbox("Items per page", [4, 6, 8, 10], index=1)
+with pagination_col2:
+    page = st.selectbox("Page", options=list(range(1, (len(df) - 1) // items_per_page + 2)))
+
+if page != st.session_state.selected_page:
+    st.session_state.selected_page = page
+    scroll_to_top()
+    st.rerun()
+
+start = (page - 1) * items_per_page
+end = start + items_per_page
+filtered_df = df 
+paged_df = filtered_df.iloc[start:end]
+
+for idx, row in paged_df.iterrows():
+    col = columns[idx % 2]
     with col:
-       
         st.markdown(f"""
         <div style="
             background-color: #f9f9f9;
@@ -195,7 +229,7 @@ for idx, row in filtered_df.iterrows():
             💰 {row['Price Range']} &nbsp;&nbsp; ⭐ {row['Rating'] if pd.notna(row['Rating']) else 'N/A'}<br>
             ✅ <strong>Pros:</strong> {row['Pros']}<br>
             ⚠️ <strong>Cons:</strong> {row['Cons']}<br>
-            🧾 <strong>Reservation Required:</strong> {"Yes" if row["Reservation Required"] else "No"}</p>
+            🧮 <strong>Reservation Required:</strong> {"Yes" if row["Reservation Required"] else "No"}</p>
             <div style="
             display: flex;
             justify-content: center;
@@ -207,7 +241,6 @@ for idx, row in filtered_df.iterrows():
             {f'<a href="{row["Address"]}" target="_blank"><img src="data:image/png;base64,{map_icon}" width="60" height="60" title="Map Location"/></a>' if row["Address"] else ''}
         </div>
         </div>
-
         """, unsafe_allow_html=True)
 
 

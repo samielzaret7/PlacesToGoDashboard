@@ -1,3 +1,4 @@
 notion_client==2.3.0
 pandas==2.2.3
 streamlit==1.45.1
+streamlit_scroll_to_top==0.0.4
