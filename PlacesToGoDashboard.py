@@ -99,6 +99,15 @@ def fetch_and_parse():
 
 st.title("📍 Places to Visit Dashboard")
 
+theme = st.get_option("theme.base")
+
+if theme == "dark":
+    text_color = "#FFFFFF"
+    card_bg = "#1E1E1E"
+else:
+    text_color = "#000000"
+    card_bg = "#FFFFFF"
+
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
