@@ -97,7 +97,7 @@ def fetch_and_parse():
     return pd.DataFrame(data)
 
 
-st.title("📍 Places to Visit Dashboard")
+st.title("📍 Places to Visit")
 
 theme = st.get_option("theme.base")
 
