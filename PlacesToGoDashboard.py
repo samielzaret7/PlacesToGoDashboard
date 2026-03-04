@@ -17,7 +17,6 @@ def scroll_to_top():
     st.session_state.scroll_to_top = True
 
 
-
 @st.cache_data
 def load_icon_as_base64(path):
     with open(path, "rb") as f:
@@ -30,7 +29,6 @@ map_icon = load_icon_as_base64(".assets/map_icon.png")
 NOTION_TOKEN = st.secrets["NOTION_API_KEY"]
 DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 
-# Notion client
 notion = Client(auth=NOTION_TOKEN)
 
 
@@ -54,7 +52,7 @@ def get_value(prop, prop_type):
     else:
         return None
 
-# Fetch pages from Notion
+
 @st.cache_data(ttl=3600)
 def fetch_and_parse():
     results = []
@@ -97,27 +95,123 @@ def fetch_and_parse():
     return pd.DataFrame(data)
 
 
+@st.cache_data
+def get_filter_options(df):
+    cities = sorted(df["City"].dropna().unique())
+    categories = sorted(df["Category"].dropna().unique())
+    sub_cats = sorted({cat for sublist in df["Sub-Category"].dropna() for cat in sublist})
+    cuisines = sorted({c for sublist in df["Cuisine / Type"].dropna() for c in sublist})
+    prices = sorted(df["Price Range"].dropna().unique(), key=lambda x: len(x))
+    return cities, categories, sub_cats, cuisines, prices
+
+
+def add_place_to_notion(place_name, city, category, sub_cats, cuisines, price_range,
+                        rating, visited, visit_date, reservation, pros, cons, notes,
+                        pic_url, address, social):
+    props = {
+        "Place": {"title": [{"text": {"content": place_name}}]},
+        "City": {"rich_text": [{"text": {"content": city}}]},
+        "Visited": {"checkbox": visited},
+        "Reservation Required": {"checkbox": reservation},
+    }
+    if category:
+        props["Category"] = {"select": {"name": category}}
+    if sub_cats:
+        props["Sub-Category"] = {"multi_select": [{"name": s} for s in sub_cats]}
+    if cuisines:
+        props["Cuisine / Type"] = {"multi_select": [{"name": c} for c in cuisines]}
+    if price_range:
+        props["Price Range"] = {"select": {"name": price_range}}
+    if rating:
+        props["Rating"] = {"number": rating}
+    if visited and visit_date:
+        props["Visit Date"] = {"date": {"start": str(visit_date)}}
+    if pros:
+        props["Pros"] = {"rich_text": [{"text": {"content": pros}}]}
+    if cons:
+        props["Cons"] = {"rich_text": [{"text": {"content": cons}}]}
+    if notes:
+        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
+    if pic_url:
+        props["PicURL"] = {"url": pic_url}
+    if address:
+        props["Address"] = {"url": address}
+    if social:
+        props["Social"] = {"url": social}
+    notion.pages.create(
+        parent={"database_id": DATABASE_ID},
+        properties=props
+    )
+
+
 st.title("📍 Places to Visit")
 
 theme = st.get_option("theme.base")
-
 if theme == "dark":
-    text_color = "#FFFFFF"
     card_bg = "#1E1E1E"
 else:
-    text_color = "#000000"
     card_bg = "#FFFFFF"
-
-if st.sidebar.button("🔄 Refresh Data"):
-    st.cache_data.clear()
-    st.rerun()
 
 with st.spinner("Fetching data from Notion..."):
     df = fetch_and_parse()
 
+cities, categories, sub_cat_options, cuisine_options, price_options = get_filter_options(df)
 
-# Filters
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
+    if st.button("🔄 Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
+
+    # Add New Place
+    with st.expander("➕ Add New Place"):
+        with st.form("add_place_form", clear_on_submit=True):
+            new_place = st.text_input("Place Name *")
+            new_city = st.text_input("City")
+            new_category = st.selectbox("Category", [""] + list(categories))
+            new_sub_cats = st.multiselect("Sub-Category", sub_cat_options)
+            new_cuisines = st.multiselect("Cuisine / Type", cuisine_options)
+            new_price = st.selectbox("Price Range", ["", "$", "$$", "$$$"])
+            new_rating = st.slider("Rating", 0, 5, 0)
+            new_visited = st.checkbox("Visited")
+            new_visit_date = st.date_input("Visit Date", value=None)
+            new_reservation = st.checkbox("Reservation Required")
+            new_pros = st.text_area("Pros")
+            new_cons = st.text_area("Cons")
+            new_notes = st.text_area("Notes")
+            new_pic = st.text_input("Image URL")
+            new_address = st.text_input("Map URL")
+            new_social = st.text_input("Social URL")
+            submitted = st.form_submit_button("Add Place")
+
+            if submitted:
+                if not new_place.strip():
+                    st.error("Place name is required.")
+                else:
+                    try:
+                        add_place_to_notion(
+                            new_place.strip(),
+                            new_city.strip(),
+                            new_category or None,
+                            new_sub_cats,
+                            new_cuisines,
+                            new_price or None,
+                            new_rating if new_rating > 0 else None,
+                            new_visited,
+                            new_visit_date if new_visited else None,
+                            new_reservation,
+                            new_pros.strip(),
+                            new_cons.strip(),
+                            new_notes.strip(),
+                            new_pic.strip() or None,
+                            new_address.strip() or None,
+                            new_social.strip() or None,
+                        )
+                        st.success(f"✅ '{new_place}' added!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding place: {e}")
 
     st.header("🔀 Sort By")
     sort_option = st.selectbox(
@@ -134,20 +228,35 @@ with st.sidebar:
             "Not Visited First",
         ]
     )
+
     st.header("🔍 Filters")
-    city = st.multiselect("City", df["City"].dropna().unique())
-    category = st.multiselect("Category", df["Category"].dropna().unique())
-    all_sub_cats = sorted({cat for sublist in df["Sub-Category"].dropna() for cat in sublist})
-    sub_category = st.multiselect("Sub-Category", all_sub_cats)
-    all_cuisine_types = sorted({c for sublist in df["Cuisine / Type"].dropna() for c in sublist})
-    cuisine_type = st.multiselect("Cuisine / Type", all_cuisine_types)
-    visited = st.radio("Visited?", ["All", "Yes", "No"])
-    reservation = st.radio("Reservation Required?", ["All", "Yes", "No"])
-    price_range = st.multiselect("Price Range", df["Price Range"].dropna().unique())
-    rating = st.slider("Minimum Rating", 0, 5, 0)
+    search = st.text_input("Search by name or city", placeholder="Type to search...")
+
+    if st.button("✖ Clear All Filters"):
+        for key in ["city_f", "cat_f", "sub_f", "cui_f", "vis_f", "res_f", "price_f", "rating_f"]:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+
+    city = st.multiselect("City", cities, key="city_f")
+    category = st.multiselect("Category", categories, key="cat_f")
+    sub_category = st.multiselect("Sub-Category", sub_cat_options, key="sub_f")
+    cuisine_type = st.multiselect("Cuisine / Type", cuisine_options, key="cui_f")
+    visited = st.radio("Visited?", ["All", "Yes", "No"], key="vis_f")
+    reservation = st.radio("Reservation Required?", ["All", "Yes", "No"], key="res_f")
+    price_range = st.multiselect("Price Range", price_options, key="price_f")
+    rating = st.slider("Minimum Rating", 0, 5, 0, key="rating_f")
 
 
+# ── Filtering ──────────────────────────────────────────────────────────────────
 filtered_df = df.copy()
+
+if search:
+    mask = (
+        df["Place"].str.contains(search, case=False, na=False) |
+        df["City"].str.contains(search, case=False, na=False)
+    )
+    filtered_df = filtered_df[mask]
 if city:
     filtered_df = filtered_df[filtered_df["City"].isin(city)]
 if category:
@@ -161,25 +270,28 @@ if price_range:
 filtered_df = filtered_df[filtered_df["Rating"].fillna(0) >= rating]
 if sub_category:
     filtered_df = filtered_df[filtered_df["Sub-Category"].apply(
-        lambda x: any(cat in x for cat in sub_category)
+        lambda x: bool(x) and any(cat in x for cat in sub_category)
     )]
 if cuisine_type:
     filtered_df = filtered_df[filtered_df["Cuisine / Type"].apply(
-        lambda x: any(c in x for c in cuisine_type)
+        lambda x: bool(x) and any(c in x for c in cuisine_type)
     )]
 
+# ── Sorting ────────────────────────────────────────────────────────────────────
 if sort_option == "Rating (High to Low)":
     filtered_df = filtered_df.sort_values(by="Rating", ascending=False)
 elif sort_option == "Rating (Low to High)":
     filtered_df = filtered_df.sort_values(by="Rating", ascending=True)
 elif sort_option == "Price Range ($ to $$$)":
     price_order = {"$": 1, "$$": 2, "$$$": 3}
-    filtered_df["Price Rank"] = filtered_df["Price Range"].map(price_order)
-    filtered_df = filtered_df.sort_values(by="Price Rank", ascending=True)
+    filtered_df = filtered_df.copy()
+    filtered_df["_price_rank"] = filtered_df["Price Range"].map(price_order)
+    filtered_df = filtered_df.sort_values(by="_price_rank", ascending=True).drop(columns=["_price_rank"])
 elif sort_option == "Price Range ($$$ to $)":
     price_order = {"$": 1, "$$": 2, "$$$": 3}
-    filtered_df["Price Rank"] = filtered_df["Price Range"].map(price_order)
-    filtered_df = filtered_df.sort_values(by="Price Rank", ascending=False)
+    filtered_df = filtered_df.copy()
+    filtered_df["_price_rank"] = filtered_df["Price Range"].map(price_order)
+    filtered_df = filtered_df.sort_values(by="_price_rank", ascending=False).drop(columns=["_price_rank"])
 elif sort_option == "Visit Date (Newest)":
     filtered_df = filtered_df.sort_values(by="Visit Date", ascending=False)
 elif sort_option == "Visit Date (Oldest)":
@@ -190,15 +302,16 @@ elif sort_option == "Not Visited First":
     filtered_df = filtered_df.sort_values(by="Visited", ascending=True)
 
 
-
-
+# ── Layout ─────────────────────────────────────────────────────────────────────
 left_col, divider_col, right_col = st.columns([1, 0.02, 1])
 columns = [left_col, right_col]
 
 with divider_col:
     st.markdown("<div style='height: 100%; border-left: 1px solid #ddd;'></div>", unsafe_allow_html=True)
 
-# Pagination control
+st.caption(f"Showing **{len(filtered_df)}** of **{len(df)}** places")
+
+# ── Pagination ─────────────────────────────────────────────────────────────────
 st.markdown("---")
 if "selected_page" not in st.session_state:
     st.session_state.selected_page = 1
@@ -207,7 +320,8 @@ pagination_col1, pagination_col2 = st.columns([1, 1])
 with pagination_col1:
     items_per_page = st.selectbox("Items per page", [4, 6, 8, 10], index=1)
 with pagination_col2:
-    page = st.selectbox("Page", options=list(range(1, (len(df) - 1) // items_per_page + 2)))
+    total_pages = max(1, (len(filtered_df) - 1) // items_per_page + 1)
+    page = st.selectbox("Page", options=list(range(1, total_pages + 1)))
 
 if page != st.session_state.selected_page:
     st.session_state.selected_page = page
@@ -216,11 +330,13 @@ if page != st.session_state.selected_page:
 
 start = (page - 1) * items_per_page
 end = start + items_per_page
-filtered_df = df 
 paged_df = filtered_df.iloc[start:end]
 
-for idx, row in paged_df.iterrows():
-    col = columns[idx % 2]
+# ── Cards ──────────────────────────────────────────────────────────────────────
+for card_idx, (_, row) in enumerate(paged_df.iterrows()):
+    col = columns[card_idx % 2]
+    sub_cats_str = ', '.join(row['Sub-Category']) if isinstance(row['Sub-Category'], list) else (row['Sub-Category'] or '')
+    cuisines_str = ', '.join(row['Cuisine / Type']) if isinstance(row['Cuisine / Type'], list) else (row['Cuisine / Type'] or '')
     with col:
         st.markdown(f"""
         <div style="
@@ -234,8 +350,8 @@ for idx, row in paged_df.iterrows():
             <img src="{row['PicURL']}" style="width: 100%; border-radius: 12px;" />
             <h3 style="margin-top: 1em;">{row['Place']}</h3>
             <p><strong>{row['City']}</strong><br>
-            {', '.join(row['Sub-Category']) if isinstance(row['Sub-Category'], list) else row['Sub-Category']}<br>
-            {', '.join(row['Cuisine / Type']) if isinstance(row['Cuisine / Type'], list) else row['Cuisine / Type']}<br>
+            {sub_cats_str}<br>
+            {cuisines_str}<br>
             💰 {row['Price Range']} &nbsp;&nbsp; ⭐ {row['Rating'] if pd.notna(row['Rating']) else 'N/A'}<br>
             ✅ <strong>Pros:</strong> {row['Pros']}<br>
             ⚠️ <strong>Cons:</strong> {row['Cons']}<br>
@@ -252,6 +368,3 @@ for idx, row in paged_df.iterrows():
         </div>
         </div>
         """, unsafe_allow_html=True)
-
-
-
