@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from notion_client import Client
 import base64
+from datetime import datetime
 from streamlit_scroll_to_top import scroll_to_here
 
 st.set_page_config(layout="wide")
@@ -146,11 +147,6 @@ def add_place_to_notion(place_name, city, category, sub_cats, cuisines, price_ra
 
 st.title("📍 Places to Visit")
 
-theme = st.get_option("theme.base")
-if theme == "dark":
-    card_bg = "#1E1E1E"
-else:
-    card_bg = "#FFFFFF"
 
 with st.spinner("Fetching data from Notion..."):
     df = fetch_and_parse()
@@ -337,10 +333,22 @@ for card_idx, (_, row) in enumerate(paged_df.iterrows()):
     col = columns[card_idx % 2]
     sub_cats_str = ', '.join(row['Sub-Category']) if isinstance(row['Sub-Category'], list) else (row['Sub-Category'] or '')
     cuisines_str = ', '.join(row['Cuisine / Type']) if isinstance(row['Cuisine / Type'], list) else (row['Cuisine / Type'] or '')
+
+    if row['Visited']:
+        if row['Visit Date']:
+            date_str = datetime.strptime(row['Visit Date'], "%Y-%m-%d").strftime("%B %d, %Y")
+            visited_line = f'✅ <strong>Visited</strong> · {date_str}'
+        else:
+            visited_line = '✅ <strong>Visited</strong>'
+        card_bg = "#e8f5e9"
+    else:
+        visited_line = '○ Not visited yet'
+        card_bg = "#eeeeee"
+
     with col:
         st.markdown(f"""
         <div style="
-            background-color: #eeeeee;
+            background-color: {card_bg};
             color: #000;
             border-radius: 18px;
             padding: 20px;
@@ -349,6 +357,7 @@ for card_idx, (_, row) in enumerate(paged_df.iterrows()):
         ">
             <img src="{row['PicURL']}" style="width: 100%; border-radius: 12px;" />
             <h3 style="margin-top: 1em;">{row['Place']}</h3>
+            <p style="margin: 4px 0 12px 0; color: #555;">{visited_line}</p>
             <p><strong>{row['City']}</strong><br>
             {sub_cats_str}<br>
             {cuisines_str}<br>
