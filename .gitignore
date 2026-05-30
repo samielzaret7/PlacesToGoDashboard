@@ -164,3 +164,8 @@ cython_debug/
 .DS_Store
 
 .streamlit/secrets.toml
+
+# Editor / tool directories
+CLAUDE.md
+.claude/
+.vscode/
