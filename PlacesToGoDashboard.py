@@ -1,7 +1,6 @@
+import base64
 import streamlit as st
 import pandas as pd
-from notion_client import Client
-import base64
 from datetime import datetime
 from streamlit_scroll_to_top import scroll_to_here
 
@@ -27,73 +26,79 @@ def load_icon_as_base64(path):
 social_icon = load_icon_as_base64(".assets/social_icon.png")
 map_icon = load_icon_as_base64(".assets/map_icon.png")
 
-NOTION_TOKEN = st.secrets["NOTION_API_KEY"]
-DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
+# ── Google Sheets backend ────────────────────────────────────────────────────────
+# The dashboard reads from a Google Sheet shared as "Anyone with the link → Viewer".
+# We pull the `places` tab as CSV via the public gviz endpoint (no credentials).
+# Edit places directly in Google Sheets; this dashboard is read-only.
+SHEET_ID = st.secrets["SHEET_ID"]
+PLACES_TAB = "places"
+SHEET_CSV_URL = (
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}"
+    f"/gviz/tq?tqx=out:csv&sheet={PLACES_TAB}"
+)
 
-notion = Client(auth=NOTION_TOKEN)
+# Sheet column (snake_case) → app field name used throughout the UI.
+COLUMN_MAP = {
+    "place": "Place",
+    "city": "City",
+    "category": "Category",
+    "sub_category": "Sub-Category",
+    "cuisine_type": "Cuisine / Type",
+    "visited": "Visited",
+    "visit_date": "Visit Date",
+    "rating": "Rating",
+    "price_range": "Price Range",
+    "reservation_required": "Reservation Required",
+    "notes": "Notes",
+    "pros": "Pros",
+    "cons": "Cons",
+    "address_url": "Address",
+    "pic_url": "PicURL",
+    "social_url": "Social",
+}
 
 
-def get_value(prop, prop_type):
-    if prop_type == "title":
-        return prop['title'][0]['plain_text'] if prop['title'] else ""
-    elif prop_type == "rich_text":
-        return prop['rich_text'][0]['plain_text'] if prop['rich_text'] else ""
-    elif prop_type == "checkbox":
-        return prop['checkbox']
-    elif prop_type == "select":
-        return prop['select']['name'] if prop['select'] else None
-    elif prop_type == "multi_select":
-        return [t['name'] for t in prop['multi_select']]
-    elif prop_type == "date":
-        return prop['date']['start'] if prop['date'] else None
-    elif prop_type == "number":
-        return prop['number']
-    elif prop_type == "url":
-        return prop['url']
-    else:
-        return None
+def _to_bool(value):
+    return str(value).strip().upper() == "TRUE"
+
+
+def _to_list(value):
+    if pd.isna(value) or not str(value).strip():
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
 @st.cache_data(ttl=3600)
 def fetch_and_parse():
-    results = []
-    next_cursor = None
-    while True:
-        response = notion.databases.query(
-            **{
-                "database_id": DATABASE_ID,
-                "start_cursor": next_cursor,
-                "page_size": 100
-            }
-        )
-        results.extend(response['results'])
-        if not response.get('has_more'):
-            break
-        next_cursor = response.get('next_cursor')
+    raw = pd.read_csv(SHEET_CSV_URL, dtype=str)
 
-    data = []
-    for page in results:
-        props = page['properties']
-        row = {
-            "Place": get_value(props["Place"], "title"),
-            "City": get_value(props["City"], "rich_text"),
-            "Category": get_value(props["Category"], "select"),
-            "Sub-Category": get_value(props["Sub-Category"], "multi_select"),
-            "Visited": get_value(props["Visited"], "checkbox"),
-            "Visit Date": get_value(props["Visit Date"], "date"),
-            "Notes": get_value(props["Notes"], "rich_text"),
-            "Pros": get_value(props["Pros"], "rich_text"),
-            "Cons": get_value(props["Cons"], "rich_text"),
-            "Reservation Required": get_value(props["Reservation Required"], "checkbox"),
-            "Rating": get_value(props["Rating"], "number"),
-            "Price Range": get_value(props["Price Range"], "select"),
-            "Cuisine / Type": get_value(props["Cuisine / Type"], "multi_select"),
-            "Address": get_value(props["Address"], "url"),
-            "PicURL": get_value(props["PicURL"], "url"),
-            "Social": get_value(props["Social"], "url"),
-        }
-        data.append(row)
-    return pd.DataFrame(data)
+    # Soft-delete: hide archived rows by default.
+    if "archived" in raw.columns:
+        raw = raw[raw["archived"].fillna("").str.strip().str.upper() != "TRUE"]
+
+    df = pd.DataFrame()
+    for src_col, app_col in COLUMN_MAP.items():
+        df[app_col] = raw[src_col] if src_col in raw.columns else None
+
+    # Multi-select fields are comma-separated strings in the Sheet.
+    df["Sub-Category"] = df["Sub-Category"].apply(_to_list)
+    df["Cuisine / Type"] = df["Cuisine / Type"].apply(_to_list)
+
+    # Checkboxes are TRUE/FALSE text in the Sheet.
+    df["Visited"] = df["Visited"].apply(_to_bool)
+    df["Reservation Required"] = df["Reservation Required"].apply(_to_bool)
+
+    # Numeric field; keep missing dates as None so truthiness checks work.
+    df["Rating"] = pd.to_numeric(df["Rating"], errors="coerce")
+    df["Visit Date"] = df["Visit Date"].where(df["Visit Date"].notna(), None)
+
+    # Text/URL fields: empty cells become "" so they render blank (not "None")
+    # and stay falsy for the conditional image/link rendering on the cards.
+    for col in ["Place", "City", "Category", "Price Range",
+                "Notes", "Pros", "Cons", "Address", "PicURL", "Social"]:
+        df[col] = df[col].fillna("")
+
+    return df.reset_index(drop=True)
 
 
 @st.cache_data
@@ -106,49 +111,10 @@ def get_filter_options(df):
     return cities, categories, sub_cats, cuisines, prices
 
 
-def add_place_to_notion(place_name, city, category, sub_cats, cuisines, price_range,
-                        rating, visited, visit_date, reservation, pros, cons, notes,
-                        pic_url, address, social):
-    props = {
-        "Place": {"title": [{"text": {"content": place_name}}]},
-        "City": {"rich_text": [{"text": {"content": city}}]},
-        "Visited": {"checkbox": visited},
-        "Reservation Required": {"checkbox": reservation},
-    }
-    if category:
-        props["Category"] = {"select": {"name": category}}
-    if sub_cats:
-        props["Sub-Category"] = {"multi_select": [{"name": s} for s in sub_cats]}
-    if cuisines:
-        props["Cuisine / Type"] = {"multi_select": [{"name": c} for c in cuisines]}
-    if price_range:
-        props["Price Range"] = {"select": {"name": price_range}}
-    if rating:
-        props["Rating"] = {"number": rating}
-    if visited and visit_date:
-        props["Visit Date"] = {"date": {"start": str(visit_date)}}
-    if pros:
-        props["Pros"] = {"rich_text": [{"text": {"content": pros}}]}
-    if cons:
-        props["Cons"] = {"rich_text": [{"text": {"content": cons}}]}
-    if notes:
-        props["Notes"] = {"rich_text": [{"text": {"content": notes}}]}
-    if pic_url:
-        props["PicURL"] = {"url": pic_url}
-    if address:
-        props["Address"] = {"url": address}
-    if social:
-        props["Social"] = {"url": social}
-    notion.pages.create(
-        parent={"database_id": DATABASE_ID},
-        properties=props
-    )
-
-
 st.title("📍 Places to Visit")
 
 
-with st.spinner("Fetching data from Notion..."):
+with st.spinner("Fetching data from Google Sheets..."):
     df = fetch_and_parse()
 
 cities, categories, sub_cat_options, cuisine_options, price_options = get_filter_options(df)
@@ -158,56 +124,6 @@ with st.sidebar:
     if st.button("🔄 Refresh Data"):
         st.cache_data.clear()
         st.rerun()
-
-    # Add New Place
-    with st.expander("➕ Add New Place"):
-        with st.form("add_place_form", clear_on_submit=True):
-            new_place = st.text_input("Place Name *")
-            new_city = st.text_input("City")
-            new_category = st.selectbox("Category", [""] + list(categories))
-            new_sub_cats = st.multiselect("Sub-Category", sub_cat_options)
-            new_cuisines = st.multiselect("Cuisine / Type", cuisine_options)
-            new_price = st.selectbox("Price Range", ["", "$", "$$", "$$$"])
-            new_rating = st.slider("Rating", 0, 5, 0)
-            new_visited = st.checkbox("Visited")
-            new_visit_date = st.date_input("Visit Date", value=None)
-            new_reservation = st.checkbox("Reservation Required")
-            new_pros = st.text_area("Pros")
-            new_cons = st.text_area("Cons")
-            new_notes = st.text_area("Notes")
-            new_pic = st.text_input("Image URL")
-            new_address = st.text_input("Map URL")
-            new_social = st.text_input("Social URL")
-            submitted = st.form_submit_button("Add Place")
-
-            if submitted:
-                if not new_place.strip():
-                    st.error("Place name is required.")
-                else:
-                    try:
-                        add_place_to_notion(
-                            new_place.strip(),
-                            new_city.strip(),
-                            new_category or None,
-                            new_sub_cats,
-                            new_cuisines,
-                            new_price or None,
-                            new_rating if new_rating > 0 else None,
-                            new_visited,
-                            new_visit_date if new_visited else None,
-                            new_reservation,
-                            new_pros.strip(),
-                            new_cons.strip(),
-                            new_notes.strip(),
-                            new_pic.strip() or None,
-                            new_address.strip() or None,
-                            new_social.strip() or None,
-                        )
-                        st.success(f"✅ '{new_place}' added!")
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error adding place: {e}")
 
     st.header("🔀 Sort By")
     sort_option = st.selectbox(
@@ -345,35 +261,34 @@ for card_idx, (_, row) in enumerate(paged_df.iterrows()):
         visited_line = '○ Not visited yet'
         card_bg = "#eeeeee"
 
+    img_html = (f'<img src="{row["PicURL"]}" style="width: 100%; border-radius: 12px;" />'
+                if row["PicURL"] else '')
+    social_html = (f'<a href="{row["Social"]}" target="_blank"><img src="data:image/png;base64,{social_icon}" '
+                   f'width="60" height="60" title="Instagram"/></a>' if row["Social"] else '')
+    map_html = (f'<a href="{row["Address"]}" target="_blank"><img src="data:image/png;base64,{map_icon}" '
+                f'width="60" height="60" title="Map Location"/></a>' if row["Address"] else '')
+    rating_str = row['Rating'] if pd.notna(row['Rating']) else 'N/A'
+    reservation_str = "Yes" if row["Reservation Required"] else "No"
+
+    # Built as one continuous string (no newlines): a blank line inside an HTML
+    # block would terminate it and make Markdown render the rest as a code block.
+    card_html = (
+        f'<div style="background-color: {card_bg}; color: #000; border-radius: 18px; '
+        f'padding: 20px; margin-bottom: 24px; box-shadow: 0 2px 6px rgba(0,0,0,0.06);">'
+        f'{img_html}'
+        f'<h3 style="margin-top: 1em;">{row["Place"]}</h3>'
+        f'<p style="margin: 4px 0 12px 0; color: #555;">{visited_line}</p>'
+        f'<p><strong>{row["City"]}</strong><br>{sub_cats_str}<br>{cuisines_str}<br>'
+        f'💰 {row["Price Range"]} &nbsp;&nbsp; ⭐ {rating_str}<br>'
+        f'✅ <strong>Pros:</strong> {row["Pros"]}<br>'
+        f'⚠️ <strong>Cons:</strong> {row["Cons"]}<br>'
+        f'🧮 <strong>Reservation Required:</strong> {reservation_str}</p>'
+        f'<div style="display: flex; justify-content: center; align-items: center; '
+        f'gap: 50px; margin-top: 16px;">'
+        f'{social_html}{map_html}'
+        f'</div>'
+        f'</div>'
+    )
+
     with col:
-        st.markdown(f"""
-        <div style="
-            background-color: {card_bg};
-            color: #000;
-            border-radius: 18px;
-            padding: 20px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
-        ">
-            <img src="{row['PicURL']}" style="width: 100%; border-radius: 12px;" />
-            <h3 style="margin-top: 1em;">{row['Place']}</h3>
-            <p style="margin: 4px 0 12px 0; color: #555;">{visited_line}</p>
-            <p><strong>{row['City']}</strong><br>
-            {sub_cats_str}<br>
-            {cuisines_str}<br>
-            💰 {row['Price Range']} &nbsp;&nbsp; ⭐ {row['Rating'] if pd.notna(row['Rating']) else 'N/A'}<br>
-            ✅ <strong>Pros:</strong> {row['Pros']}<br>
-            ⚠️ <strong>Cons:</strong> {row['Cons']}<br>
-            🧮 <strong>Reservation Required:</strong> {"Yes" if row["Reservation Required"] else "No"}</p>
-            <div style="
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 50px;
-            margin-top: 16px;
-            ">
-            {f'<a href="{row["Social"]}" target="_blank"><img src="data:image/png;base64,{social_icon}" width="60" height="60" title="Instagram"/></a>' if row["Social"] else ''}
-            {f'<a href="{row["Address"]}" target="_blank"><img src="data:image/png;base64,{map_icon}" width="60" height="60" title="Map Location"/></a>' if row["Address"] else ''}
-        </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(card_html, unsafe_allow_html=True)
